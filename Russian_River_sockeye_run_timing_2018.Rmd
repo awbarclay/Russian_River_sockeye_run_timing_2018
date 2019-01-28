@@ -1,0 +1,494 @@
+---
+title: "Russian River sockeye run timing 2018"
+author: "Andy Barclay"
+date: "January 23, 2019"
+output: html_document
+---
+This R Markdown documents the genetic mixed stock analysis of sockeye salmon sampled from the lower Kenai River test fishery in 2018.  The purpose of this study is to determine if non-Russian River sockeye are present in the Kenai River during the early run.
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+##Set up workspace
+###Get functions and load tidy packages
+```{r workspace setup}
+
+source("C:\\Users\\awbarclay\\Documents\\R\\GitHubCloneFunctions.R")#GCL functions
+source("V:\\Analysis\\Staff\\Andy Barclay\\R\\New Functions\\WorkspaceFolders.GCL.R")#A function I wrote
+
+library("tidyverse")
+
+```
+
+###Create output folders 
+```{r create folders, echo=TRUE, message=FALSE}
+
+#WorkspaceFolders.GCL(Folders=c("data",output","bayes","objects","rubias"),Subfolders=list(bayes=c("baseline","mixture","control","output"),rubias=c("baseline","mixture","output")),wd=getwd())
+
+```
+###Create tissue import file with CAPTURE_DATE for SKENNT18L
+```{r read in original tissue table}
+
+tissue_table_original <- read_csv(file="data/SKENNT18L_fish_and_tissues_report_1.23.19.csv")
+
+header<-dimnames(tissue_table_original)[[2]]
+
+```
+```{r read in data sheet}
+
+data_sheet <- read_csv(file="data/2018 Kenai Sockeye Netting-Lower selection.csv")
+
+```
+```{r add capture date}
+
+tissue_table_new <- tissue_table_original %>% 
+  left_join(y=data_sheet,by=c("DNA_TRAY_CODE","DNA_TRAY_WELL_CODE")) %>% 
+  mutate(CAPTURE_DATE=CAPTURE_DATE.y,CAPTURE_LOCATION="Lower_Kenai_River_Test_Fish") %>% 
+  select(header)
+
+write_excel_csv(tissue_table_new,"data/SKENNT18L_tissue_table_import_1.23.19.csv",na="")
+
+```
+
+
+###Create locus control and get genotype data
+```{r locus control, echo=TRUE}
+
+#CreateLocusControl.GCL(markersuite = "Sockeye2011_96SNPs", username ="awbarclay", password = password)#Locus control
+
+#LOKI2R.GCL(sillyvec="SKENNT18L",username="awbarclay",password)#Pull Data from LOKI
+
+#save.image("V:/Analysis/2_Central/Sockeye/Cook Inlet/2012 Baseline/Mixture/Russian_River_sockeye_run_timing_2018/Russian_River_sockeye_run_timing_2018.Rdata")
+
+load("V:/Analysis/2_Central/Sockeye/Cook Inlet/2012 Baseline/Mixture/Russian_River_sockeye_run_timing_2018/Russian_River_sockeye_run_timing_2018.Rdata")
+
+```
+
+###Create initial locus object
+```{r initial locus object}
+
+loci <- LocusControl$locusnames
+
+```
+
+##Data cleanup
+###Check initial sample size
+```{r initial sample size, echo=TRUE}
+
+ColSize<-data.frame(row.names = "SKENNT18L")
+ColSize$Original_N <- SKENNT18L.gcl$n
+ColSize
+
+```
+
+###Removing individuals with <80% of loci with gentotypes
+Fish that have gentoypes for less than 80% of loci are likely to have poor quality DNA and might introduce gentotyping errors into the mixture data and reduce the accruacy of the mixed stock analysis (MSA)
+```{r missloci,echo=TRUE}
+
+MissLOCI=RemoveIndMissLoci.GCL(sillyvec="SKENNT18L",proportion=0.8)
+MissLOCI
+
+ColSize$AfterMissLoci_N <- SKENNT18L.gcl$n
+ColSize
+
+```
+
+###Check for duplicate individuals and remove them
+Fish with 99% of scores that match
+No duplicates to remove
+```{r dupckeck, echo=TRUE, message=FALSE}
+
+dupcheck<-CheckDupWithinSilly.GCL(sillyvec="SKENNT18L",loci=loci,quantile=NULL,minproportion=0.99)
+dupcheck
+```
+```{r final sample size}
+ColSize$Final_N <- SKENNT18L.gcl$n
+ColSize
+
+```
+##Combine MHCs and mtDNA loci
+```{r}
+
+CombineLoci.GCL(sillyvec = "SKENNT18L",markerset = loci[c(10,12,13)],update=TRUE)#mtDNA
+
+CombineLoci.GCL(sillyvec = "SKENNT18L",markerset = loci[c(32,33)],update=TRUE)#mtDNA
+
+loci93 <- LocusControl$locusnames[-c(10,12,13,32,33)]
+
+```
+
+
+##Create BAYES baseline and get objects from baseline workspace
+```{r get objects from baseline }
+
+attach("V:/Analysis/2_Central/Sockeye/Cook Inlet/2012 Baseline/Baseline/EarlyRussianProoftests.RData")
+
+groups<-groups
+
+groupvec <- groupvec
+
+Kenai14pops<-Kenai14pops
+
+PopNames <- LocNames
+
+basefortran<-CreateBaseline.GCL(sillyvec=Kenai14pops,loci=loci93,dir="bayes/baseline",basename="Kenai14pops96loci",type="BAYES",groupvec=NULL)#BAYES
+baseline<-create_rubias_baseline(sillyvec = Kenai14pops,loci=loci93,group_names = groups,groupvec = groupvec,baseline_name = "Kenai14pops96loci")#rubias
+
+detach()
+baseline
+```
+##Set up mixture objects
+###Pool to mixture .gcl objects
+```{r mixture setup}
+
+require(lubridate)
+
+attr <- as.tibble(SKENNT18L.gcl$attributes) %>% 
+  mutate(CAPTURE_DATE=as.Date(CAPTURE_DATE))
+
+Mixtures=c("May24toJun3","Jun4to10","June11to20","Jun21to30")
+
+mixture_dates <- data_sheet %>% 
+  group_by(STRATUM) %>% 
+  summarize(Start_Date=min(CAPTURE_DATE),End_Date=max(CAPTURE_DATE)) %>% 
+  mutate(Mixture=Mixtures)
+
+for(mix in Mixtures){
+
+  dates <- mixture_dates %>% 
+    filter(Mixture==mix)
+  
+  PoolCollections.GCL(collections="SKENNT18L",
+                      loci=loci93,
+                      IDs=attr %>% 
+                        filter(CAPTURE_DATE%in%with(dates, seq(from=Start_Date,to=End_Date,by=1))) %>% 
+                        pull(FK_FISH_ID) %>%
+                        as.character%>% 
+                        list,
+                      newname = mix
+                      )
+}
+
+sapply(Mixtures,function(mix){get(paste0(mix,".gcl"))$n})#Mixture sample sizes
+
+```
+###Create mixture inputs
+####BAYES mixture files
+```{r create BAYES mixture input files,echo=FALSE}
+
+for(mix in Mixtures){
+  
+  mixfortran<-CreateMixture.GCL(sillys = mix,loci=loci93,mixname=mix,dir="bayes/mixture")
+  
+}
+
+```
+####rubias mixture input files and object
+```{r create rubias mixture input files,echo=FALSE}
+
+mix.in<-create_rubias_mixture(sillyvec=Mixtures,loci=loci93,path = "rubias/mixture")
+mix.in
+
+```
+
+##Create BAYES Control Files
+```{r bayes control files,echo=FALSE}
+
+initmat<-MultiChainInits.GCL(npops=length(Kenai14pops),nchains=5,prop=.9)#Initial start values
+
+priors<-Prior.GCL(groupvec=groupvec,groupweights=rep(1/max(groupvec),max(groupvec)),minval=0.01)#Flat prior
+
+
+for(mix in Mixtures){
+  
+ 
+  CreateControlFile.GCL (sillyvec=Kenai14pops,loci=loci93,mixname=mix,basename="Kenai14pops96loci",suffix="",nreps=40000,nchains=5,groupvec=groupvec,priorvec=priors,initmat=initmat,dir="bayes/control",seeds=matrix(sample(seq(10000),3*5),nrow=3),
+                               thin=c(1,1,1),mixfortran=mixfortran,basefortran=basefortran,switches="F T F T T T F")
+  
+}
+
+```
+###Move BAYES file to output folder for analysis
+```{r move BAYES files}
+#Move files into output folders for running BAYES
+
+ folders<-c("control","mixture")
+ dir = paste0(getwd(),"/bayes")
+ 
+ bayesexe.paths=list.files("V:\\Analysis\\2_Central\\Chinook\\Cook Inlet\\2014\\Baseline\\BAYES\\BAYES exe files",full.names=T,include.dirs=T)
+ 
+ bayesexe.files=list.files("V:\\Analysis\\2_Central\\Chinook\\Cook Inlet\\2014\\Baseline\\BAYES\\BAYES exe files",full.names=F,include.dirs=T)
+
+
+#Move mixture and control files to output folder
+ for(mix in Mixtures){
+   
+   dir.create(path=paste0(dir,"/output/",mix))
+ 
+    for(folder in folders){
+          
+          files=list.files(paste(dir,"/",folder,sep=''),pattern=mix) 
+          
+          paths=paste(dir,"/",folder,"/",files,sep='')
+          
+          for (path in paths){
+            
+            file.rename(from= path,to=sub(pattern=paste("bayes/",folder,sep=''),x= path,replacement=paste("bayes/output/",mix,sep=''),fixed=T))
+                        
+          }
+    }
+   
+   file.copy(from=paste0(dir,"/baseline/Kenai14pops96loci.bse"),to=paste0(dir,"/output/",mix,"/Kenai14pops96loci.bse"))
+   
+   file.copy(from=bayesexe.paths,to=paste0("bayes/output/",mix,"/",bayesexe.files))
+   
+ }  
+
+
+```
+###Summarize BAYES mixture results
+```{r BAYES mixture summary by group, echo=FALSE}
+
+      
+BAYES_results<-CustomCombineBAYESOutput.GCL(groupvec=seq(3),groupnames=groups, maindir="BAYES/output", mixvec=Mixtures, prior="", ext="RGN", nchains=5, burn=0.5, alpha=0.1,PosteriorOutput=FALSE)
+
+results_sum_df<-BAYES_results%>% 
+  sapply(FUN = as_tibble,USE.NAMES = TRUE,simplify = FALSE) %>% 
+  bind_rows(.id="mixture") %>% 
+  mutate(group=rep(groups,length(Mixtures))) %>% 
+  select(mixture,group,mean,'5%','95%',sd)
+
+results_sum_df
+
+
+```
+###Checking compostion by population
+```{r BAYES mixture summary by pop, echo=FALSE}
+
+      
+BAYES_results_pop<-CustomCombineBAYESOutput.GCL(groupvec=1:14,groupnames=Kenai14pops, maindir="bayes/output", mixvec=Mixtures, prior="", ext="BOT", nchains=5, burn=0.5, alpha=0.1,PosteriorOutput=FALSE)
+
+pop_results_sum_df<-BAYES_results_pop%>% 
+  sapply(FUN = as_tibble,USE.NAMES = TRUE,simplify = FALSE) %>% 
+  bind_rows(.id="mixture") %>% 
+  mutate(pop=rep(PopNames,length(Mixtures))) %>% 
+  select(mixture,pop,mean,'5%','95%',sd)
+
+pop_results_sum_df
+
+```
+
+###Analyze mixtures with rubias
+```{r rubias analysis,echo=FALSE}
+
+priors_rubias<-tibble(collection=Kenai14pops,pi_param=priors,minval=0.01) 
+
+sapply(Mixtures,function(mix){
+  
+  run_mix<-mix.in %>% filter(collection==mix)
+  
+
+  
+  run_rubias_mixture(reference=baseline, mixture=run_mix, group_names=groups, gen_start_col=5, method = "PB", 
+                               alle_freq_prior = list(const_scaled = 1), pi_prior =priors_rubias , 
+                               pi_init = NULL, reps = 25000, burn_in = 5000, pb_iter = 100, 
+                               sample_int_Pi = 10, pi_prior_sum = 1, 
+                               path = "rubias/output", seed = 56) 
+}) 
+
+```
+###Summarize rubias results
+The rubias mcmc and bias correced results are very similar to the BAYES results, but using BAYES estimates for remaining analyses
+```{r rubias mixture summary,echo=FALSE}
+
+rubias_results_bias_cor <- custom_combine_rubias_output(rubias_output = NULL, mixvec = Mixtures, group_names = groups, 
+    group_names_new = NULL, groupvec = NULL, groupvec_new = NULL, 
+    path = "rubias/output", alpha = 0.1, burn_in = 5000, bias_corr = TRUE, 
+    threshold = 5e-07, plot_trace = FALSE)
+
+rubias_results_mcmc <- custom_combine_rubias_output(rubias_output = NULL, mixvec = Mixtures, group_names = groups, 
+    group_names_new = NULL, groupvec = NULL, groupvec_new = NULL, 
+    path = "rubias/output", alpha = 0.1, burn_in = 5000, bias_corr = FALSE, 
+    threshold = 5e-07, plot_trace = FALSE)
+
+results_all_methods <- bind_rows(
+  rubias_results_bias_cor %>% 
+  mutate(method="rubias_PB",lo5CI=`5%`,hi95CI=`95%`) %>% 
+  select(-`P=0`,-`5%`,-`95%`,-median),
+
+rubias_results_mcmc %>% 
+  mutate(method="rubias_MCMC",lo5CI=`5%`,hi95CI=`95%`)%>% 
+   select(-`P=0`,-`5%`,-`95%`,-median),
+
+results_sum_df %>% 
+  mutate(mixture_collection=mixture,repunit=factor(group,levels=groups),method="BAYES",lo5CI=`5%`,hi95CI=`95%`)%>%
+  select(-group,-mixture,-`5%`,-`95%`)
+
+) %>% 
+  mutate(mixture_collection=factor(mixture_collection,levels=Mixtures))
+
+results_all_methods
+```
+###Plot results
+```{r plot estimates to compare, fig.height=10, fig.width=8}
+
+GrCol <- c("blue","red","green")
+
+results_all_methods %>% 
+  ggplot(aes(y=mean,x=repunit,fill=repunit))+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          strip.text.x=element_text(size=14), 
+          strip.text.y=element_text(size=14), 
+          axis.title.x=element_text(size=13),
+          axis.title.y=element_text(size=13),
+          legend.position="none")+
+  geom_bar(stat="identity",position = "dodge") +
+  geom_errorbar(aes(ymin = lo5CI, ymax = hi95CI, width = 0.3), position = "dodge")+
+  scale_fill_manual(name = "Reporting Group", values = GrCol)+
+  facet_grid(mixture_collection~method) +
+  ylab("Proportion (90% CI)")+
+  xlab("Reporting Group")
+  
+ggsave(filename="output/2018_RussianRiverRunTimingStockComps_AllMethods.pdf",device = "pdf")
+
+```
+###Plot Bayes results by pop
+```{r plot populuation estimats, fig.height=8, fig.width=5}
+
+pop_results_sum_df %>% 
+  mutate(mixture=factor(mixture,levels=Mixtures),pop=factor(pop,levels=PopNames)) %>% 
+  ggplot(aes(y=mean,x=pop,fill=pop))+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          strip.text.x=element_text(size=14), 
+          strip.text.y=element_text(size=14), 
+          axis.title.x=element_text(size=13),
+          axis.title.y=element_text(size=13),
+          legend.position="none")+
+  geom_bar(stat="identity",position = "dodge") +
+  geom_errorbar(aes(ymin = `5%`, ymax = `95%`, width = 0.3), position = "dodge")+
+  facet_grid(rows=vars(mixture))+
+  ylab("Proportion (90% CI)")+
+  xlab("Population")
+  
+ggsave(filename="output/2018_RussianRiverRunTimingStockComps_BAYES_ByPopulation.pdf",device = "pdf")
+
+```
+##Analyze mixtures in rubias with finer-scale reporting groups
+```{r fine scale reporting groups}
+
+groupvec6 <- c(1,1,1,1,1,2,3,4,4,4,4,2,5,6)
+groups6 <- c("UpperTribs","UpperMainstem","RussianEarly","RussianLate","HiddenL","SkilakOutlet")
+
+attach("V:/Analysis/2_Central/Sockeye/Cook Inlet/2012 Baseline/Baseline/EarlyRussianProoftests.RData")
+
+baseline_6groups<-create_rubias_baseline(sillyvec = Kenai14pops,loci=loci93,group_names = groups6,groupvec = groupvec6,baseline_name = "Kenai14pops96loci6groups")#rubias
+
+detach()
+baseline_6groups
+
+```
+```{r rubias analysis,echo=FALSE}
+
+sapply(Mixtures,function(mix){
+  
+  run_mix<-mix.in %>% filter(collection==mix)
+  
+  run_rubias_mixture(reference=baseline_6groups, mixture=run_mix, group_names=groups6, gen_start_col=5, method = "PB", 
+                               alle_freq_prior = list(const_scaled = 1), pi_prior =priors_rubias , 
+                               pi_init = NULL, reps = 25000, burn_in = 5000, pb_iter = 100, 
+                               sample_int_Pi = 10, pi_prior_sum = 1, 
+                               path = "rubias/output/6_groups", seed = 56) 
+}) 
+
+```
+###Summarize rubias results
+The rubias mcmc and bias correced results are very similar to the BAYES results, but using BAYES estimates for remaining analyses
+```{r rubias mixture summary,echo=FALSE}
+
+rubias_results_bias_cor_6groups <- custom_combine_rubias_output(rubias_output = NULL, mixvec = Mixtures, group_names = groups6, 
+    group_names_new = NULL, groupvec = NULL, groupvec_new = NULL, 
+    path = "rubias/output/6_groups", alpha = 0.1, burn_in = 5000, bias_corr = TRUE, 
+    threshold = 5e-07, plot_trace = FALSE)
+
+rubias_results_mcmc_6groups <- custom_combine_rubias_output(rubias_output = NULL, mixvec = Mixtures, group_names = groups6, 
+    group_names_new = NULL, groupvec = NULL, groupvec_new = NULL, 
+    path = "rubias/output/6_groups", alpha = 0.1, burn_in = 5000, bias_corr = FALSE, 
+    threshold = 5e-07, plot_trace = FALSE)
+
+results_all_methods_6groups <- bind_rows(
+  
+  rubias_results_bias_cor_6groups %>% 
+  mutate(method="rubias_PB",lo5CI=`5%`,hi95CI=`95%`) %>% 
+  select(-`P=0`,-`5%`,-`95%`,-median),
+
+rubias_results_mcmc_6groups %>% 
+  mutate(method="rubias_MCMC",lo5CI=`5%`,hi95CI=`95%`)%>% 
+   select(-`P=0`,-`5%`,-`95%`,-median)
+
+) %>% 
+  mutate(mixture_collection=factor(mixture_collection,levels=Mixtures))
+
+results_all_methods_6groups
+```
+###Plot results for 6 groups
+```{r plot estimates to compare, fig.height=10, fig.width=8}
+
+GrCol6 <- c("magenta","cyan","red","green","orange","grey")
+
+results_all_methods_6groups %>% 
+  ggplot(aes(y=mean,x=repunit,fill=repunit))+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          strip.text.x=element_text(size=14), 
+          strip.text.y=element_text(size=14), 
+          axis.title.x=element_text(size=13),
+          axis.title.y=element_text(size=13),
+          legend.position="none")+
+  geom_bar(stat="identity",position = "dodge") +
+  geom_errorbar(aes(ymin = lo5CI, ymax = hi95CI, width = 0.3), position = "dodge")+
+  scale_fill_manual(name = "Reporting Group", values = GrCol6)+
+  facet_grid(mixture_collection~method) +
+  ylab("Proportion (90% CI)")+
+  xlab("Reporting Group")
+  
+ggsave(filename="output/2018_RussianRiverRunTimingStockComps_AllMethods_6groups.pdf",device = "pdf")
+
+```
+###Plot rubias MCMC results for 3 and 6 groups
+```{r plot estimates to compare, fig.height=10, fig.width=8}
+
+GrCol_all <- c("red","green","blue","magenta","cyan","orange","grey")
+
+levels7<-c("RussianEarly","RussianLate","KenaiOther","UpperTribs","UpperMainstem","HiddenL","SkilakOutlet")
+
+df <-bind_rows( results_all_methods %>% 
+                  filter(method=="rubias_MCMC") %>% 
+                  mutate(n_groups="3 groups"),
+                
+                results_all_methods_6groups %>% 
+                  filter(method=="rubias_MCMC") %>% 
+                  mutate(n_groups="6 groups") 
+) %>% 
+  group_by(mixture_collection,n_groups) %>% 
+  arrange(desc(n_groups),match(mixture_collection,Mixtures),match(repunit,levels7)) %>% 
+  ungroup() %>% 
+  mutate(repunit=factor(repunit,levels=levels7))
+  
+
+  df %>% 
+  ggplot(aes(y=mean,x=repunit,fill=repunit))+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          strip.text.x=element_text(size=14), 
+          strip.text.y=element_text(size=14), 
+          axis.title.x=element_text(size=13),
+          axis.title.y=element_text(size=13),
+          legend.position="none")+
+  geom_bar(stat="identity",position = "dodge") +
+  geom_errorbar(aes(ymin = lo5CI, ymax = hi95CI, width = 0.3), position = "dodge")+
+  scale_fill_manual(name = "Reporting Group", values = GrCol_all)+
+  facet_grid(mixture_collection~n_groups,scales = "free_x",space = "free")+
+  ylab("Proportion (90% CI)")+
+  xlab("Reporting Group")
+  
+ggsave(filename="output/2018_RussianRiverRunTimingStockComps_rubias_MCMC_3vs6_groups.pdf",device = "pdf")
+
+```
